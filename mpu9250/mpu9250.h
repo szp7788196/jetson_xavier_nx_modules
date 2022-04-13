@@ -155,6 +155,7 @@ struct mpu9250_device
     unsigned char  *phys_addr;
 	unsigned char  *virt_addr;
     struct timer_list timer;
+    struct timer_list timer_ak8963;
     struct mutex data_lock;		    /* 互斥体 */
     wait_queue_head_t r_wait;	    /* 读等待队列头 */
 

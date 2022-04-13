@@ -11,7 +11,9 @@ static int intervalTime = 0;						//采集时间间隔
 //static int memoryPutIndex = 0;						//内存采集index
 //static int memoryGutIndex = 0;						//内存读取index
 struct task_struct *read_task;
+struct task_struct *read_task_ak8963;
 static struct completion comp;
+static struct completion comp_ak8963;
 atomic_t have_new_data;
 
 
@@ -48,12 +50,6 @@ static int mpu9250_auto_read_func(void *data)
 			dev_err(&client->dev, "%s: error: mpu9250 get accel_temp_gyro_data failed 1\n",__func__);
 		}
 
-		ret = mpu9250_get_magnetometer_data();				//读取地磁数据
-		if(ret)
-		{
-			dev_err(&client->dev, "%s: error: mpu9250 get magnetometer failed 1\n",__func__);
-		}
-
 		memcpy(mpu9250_Dev.virt_addr,&sampleData,sizeof(struct mpu9250_sample_data));
 
 		mutex_unlock(&mpu9250_Dev.data_lock);
@@ -63,6 +59,35 @@ static int mpu9250_auto_read_func(void *data)
     }
 
     return 0;
+}
+
+static int ak8963_auto_read_func(void *data)
+{
+	int ret = 0;
+	struct i2c_client *client = mpu9250_Dev.client;
+
+	while(!kthread_should_stop())
+	{
+		wait_for_completion(&comp_ak8963);
+
+		/* 获取互斥体,可以被信号打断 */
+		ret = mutex_lock_interruptible(&mpu9250_Dev.data_lock);
+		if(ret)
+		{
+			dev_err(&client->dev, "%s: error: mutex_lock failed 1\n",__func__);
+			return -ERESTARTSYS;
+		}
+
+		ret = mpu9250_get_magnetometer_data();				//读取地磁数据
+		if(ret)
+		{
+			dev_err(&client->dev, "%s: error: mpu9250 get magnetometer failed 1\n",__func__);
+		} 
+
+		mutex_unlock(&mpu9250_Dev.data_lock);
+	}
+
+	return 0;
 }
 
 static irqreturn_t mpu9250_device_irq(int irq, void *mpu9250_device)
@@ -77,6 +102,13 @@ static void mpu9250_timer_function(unsigned long arg)
 	mod_timer(&mpu9250_Dev.timer, jiffies + msecs_to_jiffies(intervalTime));
 
 	complete(&comp);
+}
+
+static void ak8963_timer_function(unsigned long arg)
+{
+	mod_timer(&mpu9250_Dev.timer_ak8963, jiffies + msecs_to_jiffies(100));
+
+	complete(&comp_ak8963);
 }
 
 static int mpu9250_write_reg(struct mpu9250_device *dev, u8 reg, u8 data)
@@ -796,8 +828,13 @@ static int mpu9250_probe(struct i2c_client *client,const struct i2c_device_id *i
 	mutex_init(&mpu9250_Dev.data_lock);
 	init_waitqueue_head(&mpu9250_Dev.r_wait);
 	atomic_set(&have_new_data, 0);
-
 	init_completion(&comp);
+	init_completion(&comp_ak8963);
+
+	init_timer(&mpu9250_Dev.timer_ak8963);
+	mpu9250_Dev.timer_ak8963.function = ak8963_timer_function;
+	mpu9250_Dev.timer_ak8963.expires = jiffies + 100;
+	add_timer(&mpu9250_Dev.timer_ak8963);
 
 	read_task = kthread_run(mpu9250_auto_read_func, NULL, "mythread");
     if(IS_ERR(read_task))
@@ -810,6 +847,12 @@ static int mpu9250_probe(struct i2c_client *client,const struct i2c_device_id *i
 			dev_err(&client->dev, "%s: error: Failed to init mpu9250 sensor\n",__func__);
 			goto error3;
 		}
+    }
+
+	read_task_ak8963 = kthread_run(ak8963_auto_read_func, NULL, "mythread_ak8963");
+    if(IS_ERR(read_task_ak8963))
+    {
+		dev_err(&client->dev, "%s: error: read_task_ak8963 create failed.\n",__func__);
     }
 
 	return 0;
@@ -848,6 +891,15 @@ static int mpu9250_remove(struct i2c_client *client)
 
         printk(KERN_INFO "read_task thread function has stopped ,return %d\n", ret);
     }
+
+	if(!IS_ERR(read_task_ak8963))
+    {  
+		complete(&comp_ak8963);
+		
+        ret = kthread_stop(read_task_ak8963);
+
+        printk(KERN_INFO "read_task_ak8963 thread function has stopped ,return %d\n", ret);
+    }
 	
 	dev_set_drvdata(&client->dev, NULL);
 
@@ -858,6 +910,8 @@ static int mpu9250_remove(struct i2c_client *client)
 		/* 删除定时器 */
 		del_timer_sync(&mpu9250_dev->timer);
 	}
+
+	del_timer_sync(&mpu9250_dev->timer_ak8963);
 	
 	/* 注销设备 */
 	device_destroy(mpu9250_dev->class, mpu9250_dev->devid);
