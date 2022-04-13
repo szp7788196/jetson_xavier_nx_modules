@@ -12,13 +12,12 @@ static int intervalTime = 0;						//采集时间间隔
 //static int memoryGutIndex = 0;						//内存读取index
 struct task_struct *read_task;
 static struct completion comp;
-static unsigned int read_cnt = 0;
+atomic_t have_new_data;
 
 
 static int mpu9250_auto_read_func(void *data)
 {
 	int ret = 0;
-	int readable = 1;
 	unsigned char int_status = 0;
 	struct i2c_client *client = mpu9250_Dev.client;
 
@@ -32,11 +31,6 @@ static int mpu9250_auto_read_func(void *data)
 			if(ret)
 			{
 				dev_err(&client->dev, "%s: error: mpu9250 get MPU_INT_STA_REG failed 1\n",__func__);
-				readable = 0;
-			}
-			else if(!(int_status & 0x01))
-			{
-				readable = 0;
 			}
 		}
 
@@ -64,7 +58,8 @@ static int mpu9250_auto_read_func(void *data)
 
 		mutex_unlock(&mpu9250_Dev.data_lock);
 
-		read_cnt ++;
+		atomic_set(&have_new_data, 1);
+		wake_up_interruptible(&mpu9250_Dev.r_wait);
     }
 
     return 0;
@@ -265,6 +260,8 @@ static ssize_t mpu9250_read(struct file *filp, char __user *buf,size_t cnt, loff
 		return -EFAULT;
 	}
 
+	wait_event_interruptible(mpu9250_Dev.r_wait, atomic_read(&have_new_data));
+
 	ret = mutex_lock_interruptible(&mpu9250_Dev.data_lock);
 	if(ret)
 	{
@@ -285,6 +282,8 @@ static ssize_t mpu9250_read(struct file *filp, char __user *buf,size_t cnt, loff
 		dev_err(&client->dev, "%s: error: copy data to user buffer failed\n",__func__);
 		return -EFAULT;
 	}
+
+	atomic_set(&have_new_data, 0);
 
 	return ret;
 }
@@ -381,6 +380,26 @@ static int mpu9250_mmap(struct file *file, struct vm_area_struct *vma)
 	return ret;
 }
 
+ /*
+  * @description     : poll函数，用于处理非阻塞访问
+  * @param - filp    : 要打开的设备文件(文件描述符)
+  * @param - wait    : 等待列表(poll_table)
+  * @return          : 设备或者资源状态，
+  */
+unsigned int mpu9250_poll(struct file *filp, struct poll_table_struct *wait)
+{
+	unsigned int mask = 0;
+
+	poll_wait(filp, &mpu9250_Dev.r_wait, wait);	/* 将等待队列头添加到poll_table中 */
+	
+	if(atomic_read(&have_new_data))
+	{
+		mask = POLLIN | POLLRDNORM;			/* 返回PLLIN */
+	}
+	
+	return mask;
+}
+
 static int mpu9250_release(struct inode *inode, struct file *filp)
 {
 	/* 释放互斥锁 */
@@ -395,6 +414,7 @@ static const struct file_operations mpu9250_dev_ops = {
 	.read 			= mpu9250_read,
 	.unlocked_ioctl = mpu9250_ioctl,
 	.mmap			= mpu9250_mmap,
+	.poll 			= mpu9250_poll,
 	.release 		= mpu9250_release,
 };
 
@@ -689,7 +709,7 @@ static int mpu9250_interrupt_init(struct i2c_client *client)
 	irq_flags = irq_get_trigger_type(mpu9250_Dev.irq_num);
 	if (IRQF_TRIGGER_NONE == irq_flags)
 	{
-		dev_err(&client->dev, "%s: warning: Failed to get trigger type, default to IRQF_TRIGGER_FALLING\n",__func__);
+		dev_info(&client->dev, "%s: warning: Failed to get trigger type, default to IRQF_TRIGGER_FALLING\n",__func__);
 		irq_flags = IRQF_TRIGGER_FALLING;
 	}
 	
@@ -774,6 +794,8 @@ static int mpu9250_probe(struct i2c_client *client,const struct i2c_device_id *i
 
 	/* 初始化互斥体 */
 	mutex_init(&mpu9250_Dev.data_lock);
+	init_waitqueue_head(&mpu9250_Dev.r_wait);
+	atomic_set(&have_new_data, 0);
 
 	init_completion(&comp);
 
