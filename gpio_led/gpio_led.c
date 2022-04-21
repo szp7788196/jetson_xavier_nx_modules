@@ -226,7 +226,7 @@ static int gpio_led_probe(struct platform_device *pdev)
     int ret = 0;
 	struct device *dev = &pdev->dev;
 
-	printk("hello: gpio led device probing\n");
+	dev_info(dev, "hello: gpio led device probing\n");
 
 	gpio_led_dev = (struct gpio_led_device *) kmalloc(sizeof(struct gpio_led_device), GFP_KERNEL);
 	if (!gpio_led_dev) 
@@ -314,6 +314,8 @@ static int gpio_led_remove(struct platform_device *pdev)
     gpio_free(gpio_led_dev->gpio_led2);
     gpio_free(gpio_led_dev->gpio_led3);
     gpio_free(gpio_led_dev->gpio_led4);
+
+	kfree(gpio_led_dev);
 
 	return 0;
 }

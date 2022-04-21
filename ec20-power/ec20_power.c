@@ -394,6 +394,8 @@ static int ec20_power_remove(struct platform_device *pdev)
     gpio_free(ec20_power_dev_->pwr_key_gpio);
     gpio_free(ec20_power_dev_->reset_gpio);
 
+	kfree(ec20_power_dev_);
+
 	return 0;
 }
 

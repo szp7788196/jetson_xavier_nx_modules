@@ -1,7 +1,8 @@
 #include "cssc132_ctrl.h"
 
-//struct cssc132_ctrl_device cssc132_ctrl_dev;
-
+static DECLARE_BITMAP(cssc132_ctrl_minors, DEVICE_NUMBER);
+static struct class *cssc132_ctrl_class;
+static dev_t cssc132_ctrl_devid;
 
 /*
 *
@@ -62,7 +63,7 @@ static int cssc132_ctrl_read_reg(struct cssc132_ctrl_device *dev, unsigned short
 	ret = i2c_transfer(client->adapter, msg, 2);
 	if (2 != ret)
 	{
-		dev_err(&client->dev, "%s: error: reg=0x%x, len=0x%x\n",__func__, reg, len);
+		printk("%s: error: reg=0x%x, len=0x%x\n",__func__, reg, len);
 		return -EIO;
 	}
 
@@ -2455,7 +2456,7 @@ static int cssc132_ctrl_write_yuv_sequence(struct cssc132_ctrl_device *dev,unsig
         return -EIO;
     }
 
-    return ret; 
+    return ret;
 }
 
 static int cssc132_ctrl_open(struct inode *inode, struct file *filp)
@@ -2483,25 +2484,27 @@ static long cssc132_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned lon
     unsigned char temp_u8 = 0;
     unsigned short temp_u16 = 0;
     unsigned int temp_u32 = 0;
-
-	/* 检查设备类型 */
+ 
+	//检查设备类型
     if (_IOC_TYPE(cmd) != IOC_CSSC132_CTRL_MAGIC) 
 	{
         dev_err(&client->dev,"%s: error: command type [%c] error\n", __func__, _IOC_TYPE(cmd));
         return -EPERM; 
     }
 
-	/* 检查序数 */
+	//检查序数 
     if (_IOC_NR(cmd) > IOC_CSSC132_CTRL_MAX_NUM) 
 	{ 
         dev_err(&client->dev,"%s: error: command numer [%d] exceeded\n", __func__, _IOC_NR(cmd));
         return -EPERM;
     }
 
+    dev_err(&client->dev,"%s: error: ioctl read device_id failed\n", __func__);
+
 	switch(cmd)
 	{
 		case IOC_CSSC132_CTRL_R_DEVICE_ID:
-            ret = cssc132_ctrl_read_device_id(dev, &temp_u8);
+             ret = cssc132_ctrl_read_device_id(dev, &temp_u8);
             if(ret != 0)
             {
                 dev_err(&client->dev,"%s: error: ioctl read device_id failed\n", __func__);
@@ -2513,10 +2516,10 @@ static long cssc132_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned lon
 			{
 				dev_err(&client->dev,"%s: error: ioctl copy device_id to user failed\n", __func__);
 				return -EIO;
-			}
+			} 
 		break;
 
-        case IOC_CSSC132_CTRL_R_HARDWARE_VER:
+         case IOC_CSSC132_CTRL_R_HARDWARE_VER:
             ret = cssc132_ctrl_read_hardware_version(dev, &temp_u8);
             if(ret != 0)
             {
@@ -3658,7 +3661,6 @@ static long cssc132_ctrl_ioctl(struct file *filp, unsigned int cmd, unsigned lon
 
 		default:
             return -EINVAL;
-
 	}
 
 	return ret;
@@ -3676,7 +3678,6 @@ static int cssc132_ctrl_mode_init(struct cssc132_ctrl_device *dev)
     struct i2c_client *client = dev->client;
     struct cssc132_format format;
     struct gain_disassemble gain;
-
 
     format.widht = 1280;
     format.height = 720;
@@ -3796,76 +3797,76 @@ static int cssc132_ctrl_probe(struct i2c_client *client,const struct i2c_device_
 	int ret = 0;
     static unsigned char probe_cnt = 0;
     struct cssc132_ctrl_device *cssc132_ctrl_dev = NULL;
-    char device_name[16] = {0};
     
-	dev_info(&client->dev, "%s: hello: %dst cssc132_ctrl device probing\n",__func__,probe_cnt);
+	dev_info(&client->dev, "%s: hello: %dst cssc132_ctrl device probing\n",__func__,probe_cnt ++);
 
-    cssc132_ctrl_dev = (struct cssc132_ctrl_device *)kmalloc(sizeof(struct cssc132_ctrl_device),GFP_KERNEL);
+    cssc132_ctrl_dev = (struct cssc132_ctrl_device *)kzalloc(sizeof(struct cssc132_ctrl_device),GFP_KERNEL);
     if(cssc132_ctrl_dev == NULL)
     {
         dev_err(&client->dev, "%s: error: Failed to malloc %dst cssc132_ctrl_device\n",__func__,probe_cnt);
         return -EINVAL;
     }
 
-	memset(cssc132_ctrl_dev,0,sizeof(struct cssc132_ctrl_device));
-
-    sprintf(device_name,"cssc132_ctrl_%d",probe_cnt ++);
-
 	cssc132_ctrl_dev->client = client;
 
 	dev_set_drvdata(&client->dev, cssc132_ctrl_dev);
 
-	ret = cssc132_ctrl_mode_init(cssc132_ctrl_dev);
-	if (ret)
-	{
-		dev_err(&client->dev, "%s: error: Failed to init cssc132 sensor to default mode\n",__func__);
+    cssc132_ctrl_dev->devno = find_first_zero_bit(cssc132_ctrl_minors, DEVICE_NUMBER);
+	if(cssc132_ctrl_dev->devno >= DEVICE_NUMBER)
+    {
+		dev_err(&client->dev, "%s: error: find device num failed.\n",__func__);
 		goto error0;
 	}
 
-	/* 申请设备号 */
-	ret = alloc_chrdev_region(&cssc132_ctrl_dev->devid, 0, 1, device_name);
-	if (ret)
-	{
-		dev_err(&client->dev, "%s: error: Failed to alloc_chrdev_region\n",__func__);
-		return ret;
-	}
-
-	cssc132_ctrl_dev->cdev.owner = THIS_MODULE;
 	cdev_init(&cssc132_ctrl_dev->cdev, &cssc132_ctrl_dev_ops);
+	cssc132_ctrl_dev->cdev.owner = THIS_MODULE;
+	cssc132_ctrl_dev->cdev.ops = &cssc132_ctrl_dev_ops;
 
-	ret = cdev_add(&cssc132_ctrl_dev->cdev, cssc132_ctrl_dev->devid, DEVICE_NUMBER);
+	ret = cdev_add(&cssc132_ctrl_dev->cdev, MKDEV(MAJOR(cssc132_ctrl_devid), cssc132_ctrl_dev->devno), 1);
 	if(ret)
 	{
 		dev_err(&client->dev, "%s: error: cdev add failed.\n",__func__);
+		goto error0;
+	}
+
+	cssc132_ctrl_dev->device = device_create(cssc132_ctrl_class, 
+                                             &client->dev,
+                                             MKDEV(MAJOR(cssc132_ctrl_devid), cssc132_ctrl_dev->devno), 
+                                             NULL,
+                                             "%s%d", 
+                                             DEVICE_NAME, 
+                                             cssc132_ctrl_dev->devno);
+	if (IS_ERR(cssc132_ctrl_dev->device)) 
+	{
+		ret = PTR_ERR(cssc132_ctrl_dev->device);
+        dev_err(&client->dev, "%s: error: device create failed.ret = %d\n",__func__,ret);
 		goto error1;
 	}
 
-	cssc132_ctrl_dev->class = class_create(THIS_MODULE, device_name);
-	if (IS_ERR(cssc132_ctrl_dev->class)) 
+    ret = cssc132_ctrl_mode_init(cssc132_ctrl_dev);
+	if (ret)
 	{
-		dev_err(&client->dev, "%s: error: class create failed.\n",__func__);
-		ret = PTR_ERR(cssc132_ctrl_dev->class);
+		dev_err(&client->dev, "%s: error: Failed to init cssc132 sensor to default mode\n",__func__);
 		goto error2;
 	}
 
-	cssc132_ctrl_dev->device = device_create(cssc132_ctrl_dev->class, &client->dev,cssc132_ctrl_dev->devid, NULL, device_name);
-	if (IS_ERR(cssc132_ctrl_dev->device)) 
-	{
-		dev_err(&client->dev, "%s: error: device create failed.\n",__func__);
-		ret = PTR_ERR(cssc132_ctrl_dev->device);
-		goto error3;
-	}
+    set_bit(cssc132_ctrl_dev->devno, cssc132_ctrl_minors);
 
 	return 0;
-		
-error3:
-	class_destroy(cssc132_ctrl_dev->class);
+
 error2:
-	cdev_del(&cssc132_ctrl_dev->cdev);
+    device_destroy(cssc132_ctrl_class, MKDEV(MAJOR(cssc132_ctrl_devid), cssc132_ctrl_dev->devno));
+
 error1:
-	unregister_chrdev_region(cssc132_ctrl_dev->devid, DEVICE_NUMBER);
+	cdev_del(&cssc132_ctrl_dev->cdev);
+
 error0:
-	dev_set_drvdata(&client->dev, NULL);
+    if (cssc132_ctrl_dev->devno < DEVICE_NUMBER)
+    {
+        clear_bit(cssc132_ctrl_dev->devno, cssc132_ctrl_minors);
+    }
+    dev_set_drvdata(&client->dev, NULL);
+	kfree(cssc132_ctrl_dev);	
 
 	return -EINVAL;
 }
@@ -3879,17 +3880,13 @@ static int cssc132_ctrl_remove(struct i2c_client *client)
 
 	dev_set_drvdata(&client->dev, NULL);
 	
-	/* 注销设备 */
-	device_destroy(dev->class, dev->devid);
-
-	/* 注销类 */
-	class_destroy(dev->class);
+    /* 注销设备 */
+	device_destroy(cssc132_ctrl_class, MKDEV(MAJOR(cssc132_ctrl_devid), dev->devno));
 
 	/* 删除cdev */
 	cdev_del(&dev->cdev);
 
-	/* 注销设备号 */
-	unregister_chrdev_region(dev->devid, 1);
+    clear_bit(dev->devno, cssc132_ctrl_minors);
 
     kfree(dev);
 
@@ -3917,7 +3914,50 @@ static struct i2c_driver cssc132_ctrl_driver = {
 	.id_table 	= cssc132_ctrl_id,
 };
 
-module_i2c_driver(cssc132_ctrl_driver);
+static int __init cssc132_ctrl_init(void)
+{
+	int ret = 0;
+
+    //以下顺序不可颠倒
+    //第一步 创建类
+    cssc132_ctrl_class = class_create(THIS_MODULE, DEVICE_NAME);
+	if (IS_ERR(cssc132_ctrl_class)) 
+	{
+		printk(KERN_ERR "%s: error: class create failed.\n",__func__);
+		return PTR_ERR(cssc132_ctrl_class);
+	}
+
+    //第二步 申请设备号
+	ret = alloc_chrdev_region(&cssc132_ctrl_devid, 0, DEVICE_NUMBER, DEVICE_NAME);
+	if (ret)
+	{
+        class_destroy(cssc132_ctrl_class);
+		printk(KERN_ERR "%s: error: Failed to alloc_chrdev_region\n",__func__);
+		return ret;
+	}
+
+    //第三步
+    ret = i2c_add_driver(&cssc132_ctrl_driver);
+    if(ret != 0)
+    {
+        printk(KERN_ERR "Failed to register cssc132_ctrl I2C driver: %d\n",ret);
+        return ret;
+    }
+
+	return ret;
+}
+
+static void __exit cssc132_ctrl_exit(void)
+{
+	i2c_del_driver(&cssc132_ctrl_driver);
+    unregister_chrdev_region(cssc132_ctrl_devid, DEVICE_NUMBER);
+	class_destroy(cssc132_ctrl_class);
+}
+
+module_init(cssc132_ctrl_init);
+module_exit(cssc132_ctrl_exit);
+
+//module_i2c_driver(cssc132_ctrl_driver);
 
 MODULE_AUTHOR("EyeStar");
 MODULE_DESCRIPTION("cssc132 camera i2c control driver");
